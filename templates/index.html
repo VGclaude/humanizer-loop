@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Humanizer Loop</title>
+<style>
+  :root {
+    --bg: #f7f6f3; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6a66;
+    --border: #e3e1dc; --accent: #2f5d50; --accent-text: #ffffff;
+    --good: #2e7d4f; --bad: #b3432f; --warn: #a86b12; --bar: #ecebe7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --panel: #1f1f1d; --text: #ecebe7; --muted: #9a9892;
+      --border: #33322f; --accent: #7cc2a8; --accent-text: #10201b;
+      --good: #6fcf97; --bad: #ef8a74; --warn: #e6b457; --bar: #2a2a27;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 28px 16px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 22px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-width: 0; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+  textarea { width: 100%; min-height: 320px; resize: vertical; padding: 12px; border-radius: 8px;
+             border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; }
+  .controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; margin-top: 12px; }
+  label { font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+  input[type=number] { width: 90px; padding: 7px 8px; border-radius: 6px; border: 1px solid var(--border);
+                       background: var(--bg); color: var(--text); font: inherit; }
+  button { padding: 9px 18px; border-radius: 8px; border: 0; background: var(--accent); color: var(--accent-text);
+           font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+  .rounds { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+  .round { display: grid; grid-template-columns: 70px 1fr 56px; gap: 10px; align-items: center; font-size: 14px; }
+  .bar { height: 8px; background: var(--bar); border-radius: 4px; overflow: hidden; }
+  .bar > div { height: 100%; border-radius: 4px; }
+  .score { text-align: right; font-variant-numeric: tabular-nums; }
+  .status { margin: 0 0 12px; font-weight: 600; }
+  .status.good { color: var(--good); } .status.bad { color: var(--bad); } .status.run { color: var(--muted); }
+  .output { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 12px; min-height: 120px; overflow-wrap: anywhere; }
+  .flagged { margin-top: 12px; font-size: 13px; color: var(--muted); }
+  .flagged li { margin-bottom: 4px; }
+  .warn { background: var(--bar); border-left: 3px solid var(--warn); padding: 10px 12px; border-radius: 6px; margin-bottom: 18px; }
+  .row { display: flex; gap: 8px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Humanizer Loop</h1>
+  <p class="sub">Rewrites your text with Claude Sonnet and the humanizer prompt, then checks it with Sapling's AI detector. It repeats until the AI score drops below your threshold.</p>
+
+  {% if missing %}
+  <div class="warn">Missing in <code>.env</code>: {{ missing | join(", ") }}. Add them and restart the server.</div>
+  {% endif %}
+
+  <div class="grid">
+    <section class="panel">
+      <h2>Input</h2>
+      <textarea id="input" placeholder="Paste text here…"></textarea>
+      <div class="controls">
+        <label>Stop below AI score (%)
+          <input id="threshold" type="number" min="1" max="99" value="30">
+        </label>
+        <label>Max rounds
+          <input id="rounds" type="number" min="1" max="15" value="6">
+        </label>
+        <button id="go">Humanize</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Result</h2>
+      <p id="status" class="status run">Nothing run yet.</p>
+      <div id="rounds-list" class="rounds"></div>
+      <div id="output" class="output"></div>
+      <div class="row">
+        <button id="copy" class="ghost" disabled>Copy result</button>
+      </div>
+      <div id="flagged" class="flagged"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const pct = x => (x * 100).toFixed(1) + "%";
+const color = (s, t) => s < t ? "var(--good)" : s < 0.6 ? "var(--warn)" : "var(--bad)";
+
+function setStatus(text, cls) { $("status").textContent = text; $("status").className = "status " + cls; }
+
+function addRound(ev, threshold) {
+  const row = document.createElement("div");
+  row.className = "round";
+  const label = document.createElement("span");
+  label.textContent = ev.round === 0 ? "Original" : "Round " + ev.round;
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  const fill = document.createElement("div");
+  fill.style.width = Math.max(ev.score * 100, 1) + "%";
+  fill.style.background = color(ev.score, threshold);
+  bar.appendChild(fill);
+  const score = document.createElement("span");
+  score.className = "score";
+  score.textContent = pct(ev.score);
+  row.append(label, bar, score);
+  $("rounds-list").appendChild(row);
+}
+
+function showFlagged(list) {
+  $("flagged").innerHTML = "";
+  if (!list || !list.length) return;
+  const h = document.createElement("div");
+  h.textContent = "Sentences still flagged most strongly:";
+  const ul = document.createElement("ul");
+  for (const [sentence, score] of list) {
+    const li = document.createElement("li");
+    li.textContent = `(${pct(score)}) ${sentence}`;
+    ul.appendChild(li);
+  }
+  $("flagged").append(h, ul);
+}
+
+$("go").onclick = async () => {
+  const text = $("input").value.trim();
+  if (!text) return;
+  const threshold = Number($("threshold").value) / 100;
+  $("go").disabled = true; $("copy").disabled = true;
+  $("rounds-list").innerHTML = ""; $("output").textContent = ""; $("flagged").innerHTML = "";
+  setStatus("Checking original…", "run");
+
+  try {
+    const res = await fetch("/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, threshold, max_iterations: Number($("rounds").value) }),
+    });
+    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        const ev = JSON.parse(line);
+        if (ev.error) { setStatus("Error: " + ev.error, "bad"); continue; }
+        if (ev.done) {
+          $("output").textContent = ev.text;
+          $("copy").disabled = false;
+          setStatus(ev.passed
+            ? `Passed at ${pct(ev.score)} after ${ev.rounds} round(s).`
+            : `Didn't get below ${pct(threshold)} in ${ev.rounds} round(s). Showing the best version (${pct(ev.score)}).`,
+            ev.passed ? "good" : "bad");
+        } else {
+          addRound(ev, threshold);
+          $("output").textContent = ev.text;
+          showFlagged(ev.flagged);
+          if (ev.score >= threshold) setStatus(`Rewriting (round ${ev.round + 1})…`, "run");
+        }
+      }
+    }
+  } catch (e) {
+    setStatus("Error: " + e.message, "bad");
+  } finally {
+    $("go").disabled = false;
+  }
+};
+
+$("copy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("output").textContent); $("copy").textContent = "Copied"; }
+  catch { $("copy").textContent = "Copy failed"; }
+  setTimeout(() => $("copy").textContent = "Copy result", 1500);
+};
+</script>
+</body>
+</html>

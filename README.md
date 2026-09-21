@@ -7,12 +7,23 @@ Runs text through the humanizer prompt (`prompts/humanizer.md`, based on Wikiped
 ```sh
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=...
-export SAPLING_API_KEY=...     # for --detector sapling (default), https://sapling.ai
-export GPTZERO_API_KEY=...     # for --detector gptzero, https://gptzero.me
+cp .env.example .env           # then fill in the keys
 ```
 
-## Usage
+- `ANTHROPIC_API_KEY`: from https://console.anthropic.com
+- `SAPLING_API_KEY`: free tier at https://sapling.ai (dashboard, API key)
+
+## Website
+
+```sh
+python app.py
+```
+
+Open http://localhost:8000, paste text, and press Humanize. The page shows the AI score for each round, the sentences that are still flagged, and the best version, with a copy button. It uses Claude Sonnet and Sapling.
+
+## Command line
+
+The CLI reads the same keys from the environment (`export` them or `source .env`).
 
 ```sh
 python humanize_loop.py input.txt -o output.txt
@@ -28,7 +39,7 @@ Progress (the score for each round) goes to stderr; the final text goes to stdou
 | `--threshold` | `0.3` | Stop once the AI score is below this (0 to 1) |
 | `--max-iterations` | `6` | Maximum rewrite rounds |
 | `--flagged` | `5` | Number of top-flagged sentences fed back per round |
-| `--model` | `claude-opus-5` | Claude model used for rewriting |
+| `--model` | `claude-sonnet-5` | Claude model used for rewriting |
 
 ## Adding a detector
 

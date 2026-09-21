@@ -15,7 +15,7 @@ import anthropic
 import requests
 
 PROMPT_PATH = Path(__file__).parent / "prompts" / "humanizer.md"
-DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_MODEL = "claude-sonnet-5"
 
 
 # ---------- detectors ----------
@@ -86,6 +86,33 @@ def humanize(client, model, system_prompt, text, flagged, iteration):
     return re.sub(r"^<text>\s*|\s*</text>$", "", out).strip()
 
 
+def run_loop(text, detector="sapling", threshold=0.3, max_iterations=6,
+             flagged_count=5, model=DEFAULT_MODEL):
+    """Yield a dict per round: {"round", "score", "text", "flagged"}, then a final
+    {"done": True, "passed", "score", "text"} with the lowest-scoring version."""
+    detect = DETECTORS[detector]
+    client = anthropic.Anthropic()
+    system_prompt = PROMPT_PATH.read_text()
+
+    score, sentences = detect(text)
+    flagged = [s for s in sentences if s[1] >= 0.5][:flagged_count]
+    yield {"round": 0, "score": score, "text": text, "flagged": flagged}
+    best_text, best_score = text, score
+
+    iteration = 0
+    while score >= threshold and iteration < max_iterations:
+        iteration += 1
+        text = humanize(client, model, system_prompt, text, flagged, iteration)
+        score, sentences = detect(text)
+        flagged = [s for s in sentences if s[1] >= 0.5][:flagged_count]
+        yield {"round": iteration, "score": score, "text": text, "flagged": flagged}
+        if score < best_score:
+            best_text, best_score = text, score
+
+    yield {"done": True, "passed": best_score < threshold, "score": best_score,
+           "text": best_text, "rounds": iteration}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("input", nargs="?", help="Input text file (default: stdin)")
@@ -104,34 +131,20 @@ def main():
     if not text:
         sys.exit("No input text.")
 
-    detect = DETECTORS[args.detector]
-    client = anthropic.Anthropic()
-    system_prompt = PROMPT_PATH.read_text()
-
-    score, sentences = detect(text)
-    print(f"[0] AI score: {score:.1%}", file=sys.stderr)
-    best_text, best_score = text, score
-
-    iteration = 0
-    while score >= args.threshold and iteration < args.max_iterations:
-        iteration += 1
-        flagged = [s for s in sentences if s[1] >= 0.5][: args.flagged]
-        text = humanize(client, args.model, system_prompt, text, flagged, iteration)
-        score, sentences = detect(text)
-        print(f"[{iteration}] AI score: {score:.1%}", file=sys.stderr)
-        if score < best_score:
-            best_text, best_score = text, score
-
-    if best_score < args.threshold:
-        print(f"Passed: {best_score:.1%} < {args.threshold:.0%}", file=sys.stderr)
-    else:
-        print(f"Did not pass after {iteration} rounds; returning best ({best_score:.1%}).",
-              file=sys.stderr)
-
-    if args.output:
-        Path(args.output).write_text(best_text + "\n")
-    else:
-        print(best_text)
+    for event in run_loop(text, args.detector, args.threshold, args.max_iterations,
+                          args.flagged, args.model):
+        if not event.get("done"):
+            print(f"[{event['round']}] AI score: {event['score']:.1%}", file=sys.stderr)
+            continue
+        if event["passed"]:
+            print(f"Passed: {event['score']:.1%} < {args.threshold:.0%}", file=sys.stderr)
+        else:
+            print(f"Did not pass after {event['rounds']} rounds; returning best "
+                  f"({event['score']:.1%}).", file=sys.stderr)
+        if args.output:
+            Path(args.output).write_text(event["text"] + "\n")
+        else:
+            print(event["text"])
 
 
 if __name__ == "__main__":
